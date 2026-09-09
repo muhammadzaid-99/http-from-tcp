@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"http-from-tcp/internal/request"
 	"io"
 	"log"
 	"net"
@@ -54,17 +55,6 @@ func getLinesChannel(f io.ReadCloser) <-chan string {
 }
 
 func main() {
-	// f, err := os.Open("messages.txt")
-	// if err != nil {
-	// 	log.Fatal("error", err)
-	// }
-	// defer f.Close()
-
-	// lines := getLinesChannel(f)
-	// for line := range lines {
-	// 	fmt.Printf("read: %s\n", line)
-	// }
-
 	listener, err := net.Listen("tcp", ":42069")
 	if err != nil {
 		log.Fatal("error", err)
@@ -75,9 +65,23 @@ func main() {
 		if err != nil {
 			log.Fatal("error", err)
 		}
-		for line := range getLinesChannel(conn) {
-			fmt.Printf("read: %s\n", line)
+
+		req, err := request.RequestFromReader(conn)
+		if err != nil {
+			log.Fatal("error", err)
 		}
+
+		fmt.Printf("Request line:\n")
+		fmt.Printf("- Method: %s\n", req.RequestLine.Method)
+		fmt.Printf("- Target: %s\n", req.RequestLine.RequestTarget)
+		fmt.Printf("- Version: %s\n", req.RequestLine.HttpVersion)
+		fmt.Printf("Headers\n")
+		req.Headers.ForEach(func(k, v string) {
+			fmt.Printf("- %s: %s\n", k, v)
+		})
+		fmt.Printf("Body:\n")
+		fmt.Printf("%s\n", req.Body)
+
 	}
 
 }

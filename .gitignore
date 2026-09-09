@@ -1,0 +1,16 @@
+# Large media served by the /video route. Supply your own file.
+assets/*.mp4
+
+# Debug captures from manual testing
+body.txt
+headers.txt
+requestline.txt
+messages.txt
+rawget.http
+rawpost.http
+
+# Build output
+*.exe
+/httpserver
+/tcplistener
+/udpsender

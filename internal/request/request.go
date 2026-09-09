@@ -2,8 +2,9 @@ package request
 
 import (
 	"errors"
-	"fmt"
+	"http-from-tcp/internal/headers"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -11,7 +12,9 @@ type parserState int
 
 const (
 	StateInit parserState = iota
+	StateHeaders
 	StateDone
+	StateBody
 	StateError
 )
 
@@ -23,12 +26,16 @@ type RequestLine struct {
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     *headers.Headers
+	Body        string
 	state       parserState
 }
 
 func newRequest() *Request {
 	return &Request{
-		state: StateInit,
+		Headers: headers.NewHeaders(),
+		Body:    "",
+		state:   StateInit,
 	}
 }
 
@@ -36,9 +43,9 @@ var (
 	ErrInvalidHTTPVersion   = errors.New("invalid HTTP version")
 	ErrInvalidMethod        = errors.New("invalid method")
 	ErrInvalidReqTarget     = errors.New("invalid request target")
-	ErrMalformedRequestLine = fmt.Errorf("malformed request line")
-	ErrIncompleteStartLine  = fmt.Errorf("incomplete start line")
-	ErrReqInErrorState      = fmt.Errorf("request in error state")
+	ErrMalformedRequestLine = errors.New("malformed request line")
+	ErrIncompleteStartLine  = errors.New("incomplete start line")
+	ErrReqInErrorState      = errors.New("request in error state")
 )
 
 const crlf = "\r\n"
@@ -106,26 +113,85 @@ func parseRequestLine(b string) (*RequestLine, int, error) {
 
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
-outer:
+loop:
 	for {
+		buf := data[read:]
+		if len(buf) == 0 {
+			break loop
+		}
 		switch r.state {
 		case StateError:
 			return 0, ErrReqInErrorState
 		case StateInit:
-			rl, n, err := parseRequestLine(string(data[read:]))
+			rl, n, err := parseRequestLine(string(buf))
 			if err != nil {
 				r.state = StateError
 				return 0, err
 			}
 			if n == 0 {
-				break outer
+				break loop
 			}
 			r.RequestLine = *rl
 			read += n
-			r.state = StateDone
+			r.state = StateHeaders
+
+		case StateHeaders:
+			n, done, err := r.Headers.Parse(buf)
+			if err != nil {
+				r.state = StateError
+				return 0, err
+			}
+
+			read += n
+			if done {
+				// since does not contain last crlf, beacuse of test cases given
+				read += len(crlf)
+				if _, exists := r.Headers.Get("content-length"); exists {
+					r.state = StateBody
+				} else {
+					// so eof does not come on requests that have no body on next read
+					// we gracefully move to done
+					r.state = StateDone
+				}
+			}
+
+			if n == 0 {
+				break loop
+			}
+
+		case StateBody:
+			conLenStr, exists := r.Headers.Get("content-length")
+			if !exists {
+				r.state = StateDone
+				break
+			}
+
+			conLen, err := strconv.Atoi(conLenStr)
+			if err != nil {
+				r.state = StateDone // if content length is not convertible, consider 0
+				break
+			}
+			if conLen == 0 {
+				r.state = StateDone
+				break
+			}
+
+			n := min(conLen-len(r.Body), len(buf))
+			if n == 0 {
+				break loop
+			}
+
+			r.Body += string(buf[:n])
+			read += n
+
+			if len(r.Body) == conLen {
+				r.state = StateDone
+			}
 
 		case StateDone:
-			break outer
+			break loop
+		default:
+			panic("nice job")
 		}
 	}
 	return read, nil
@@ -146,6 +212,9 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	bufferLength := 0
 	for !request.done() && !request.error() {
 		n, err := reader.Read(buffer[bufferLength:])
+		// if err == io.EOF {
+		// 	break
+		// }
 		if err != nil {
 			return nil, err
 		}
@@ -158,20 +227,5 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		copy(buffer, buffer[pn:bufferLength])
 		bufferLength -= pn
 	}
-
-	// data, err := io.ReadAll(reader)
-	// if err != nil {
-	// 	return nil, errors.Join(fmt.Errorf("unable to io.ReadAll"), err)
-	// }
-	// str := string(data)
-	// rl, _, err := parseRequestLine(str)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// return &Request{
-	// 	RequestLine: *rl,
-	// }, err
-
 	return request, nil
 }
